@@ -23,9 +23,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import uuid
+
 # Generate LiveKit Token & Dispatch Agent
 @app.get("/api/token")
-async def get_token(room: str = "fieldmate-room", username: str = "user"):
+async def get_token(room: str | None = None, username: str | None = None):
+    if not room:
+        room = f"fieldmate-{uuid.uuid4().hex[:8]}"
+    if not username:
+        username = f"user-{uuid.uuid4().hex[:4]}"
+
     api_key = os.getenv("LIVEKIT_API_KEY")
     api_secret = os.getenv("LIVEKIT_API_SECRET")
     url = os.getenv("LIVEKIT_URL")
