@@ -9,9 +9,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from livekit import api
 
+from fastapi.middleware.cors import CORSMiddleware
+
 load_dotenv()
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Generate LiveKit Token & Dispatch Agent
 @app.get("/api/token")

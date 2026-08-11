@@ -14,8 +14,8 @@ function App() {
   const connectToAgent = useCallback(async () => {
     try {
       setIsConnecting(true);
-      setError(null);
-      const response = await fetch('/api/token');
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
+      const response = await fetch(`${backendUrl}/api/token`);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to initialize session');
