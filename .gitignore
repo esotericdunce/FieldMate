@@ -50,6 +50,10 @@ yarn-error.log*
 *.rar
 *.7z
 
+# Internal Master Context & Specs
+AGENTS.md
+tech-stack-documentation/
+
 # Scratch, Logs, & Context Dumps
 scratch*.py
 *.wav
