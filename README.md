@@ -1,18 +1,50 @@
-# 🛠️ FieldMate — Real-Time Voice Diagnostic Partner
+<div align="center">
+  <h1>🛠️ FieldMate</h1>
+  <p><strong>An ultra-low-latency, real-time voice diagnostic partner for field technicians.</strong></p>
 
+  <!-- Badges -->
+  <p>
+    <a href="https://github.com/esotericdunce/fieldmate/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
+    <img src="https://img.shields.io/badge/Python-3.12%2B-blue" alt="Python 3.12+">
+    <img src="https://img.shields.io/badge/FastAPI-0.111.0-009688.svg?logo=fastapi" alt="FastAPI">
+    <img src="https://img.shields.io/badge/LiveKit-WebRTC-FF4B4B.svg" alt="LiveKit">
+    <img src="https://img.shields.io/badge/Qdrant-Vector_DB-FF0055.svg?logo=qdrant" alt="Qdrant">
+  </p>
+</div>
 
-## 1️⃣ Project Description
+<br />
 
-**Why we built FieldMate:**
-Field technicians troubleshooting complex hardware, software, and networking issues face a massive cognitive load. They must operate testing equipment, physically manipulate devices, navigate manuals, and log findings—all simultaneously. Standard visual or text-based interfaces are a severe bottleneck when a technician's hands and eyes are occupied. We built FieldMate to provide a low-latency, hands-free, voice-first diagnostic partner that can actively reason alongside the technician.
+FieldMate is an open-source, voice-first diagnostic assistant engineered for hardware, software, and network troubleshooting. It acts as an active diagnostic partner for field technicians, lowering cognitive load and drastically speeding up repair times through real-time voice interaction.
 
-**Why the problem matters:**
-Inefficient diagnostics lead to extended equipment downtime, costly repeated technician visits, and massive operational losses for IT departments and OEMs. Furthermore, critical domain knowledge is often lost when experienced technicians retire. Capturing, structuring, and retrieving this diagnostic memory in real-time is essential for scaling field service teams.
+---
 
-**Scientific/Development Contribution:**
-Unlike generic conversational RAG (Retrieval-Augmented Generation) chatbots, FieldMate **owns canonical diagnostic state**. We contribute a deterministic state engine paired with a continuous multi-tier semantic caching system and long-term episodic vector memory. This architecture ensures that the LLM reasons over verified, structured diagnostic state rather than unstructured text dumps, drastically reducing hallucinations and latency while providing verifiable provenance for every recommendation.
+## 📑 Table of Contents
+- [Project Description](#-project-description)
+- [System Architecture](#️-system-architecture)
+- [Reproducibility & Setup](#-reproducibility--setup)
+- [Performance Metrics](#-performance-metrics)
+- [Credits & Partners](#-credits--partners)
 
-## 🏗️ System Architecture (Optional Documentation)
+---
+
+## 📖 Project Description
+
+### 🎯 The Problem
+Field technicians face a massive cognitive load when troubleshooting complex hardware or network issues. They must operate testing equipment, manipulate devices physically, navigate manuals, and log findings—all simultaneously. Standard visual or text-based interfaces become severe bottlenecks when a technician's hands and eyes are completely occupied. Inefficient diagnostics lead to extended downtime, costly repeated visits, and the permanent loss of critical domain knowledge when senior technicians retire.
+
+### 💡 Our Solution
+We built **FieldMate** to solve this bottleneck. FieldMate is a low-latency, hands-free, voice-first diagnostic partner that actively reasons alongside the technician in real-time. 
+
+### 🔬 Scientific & Development Contribution
+Unlike generic conversational RAG (Retrieval-Augmented Generation) chatbots, FieldMate **owns canonical diagnostic state**. We contribute a novel **deterministic state engine** paired with a continuous multi-tier semantic caching system and long-term episodic vector memory. 
+
+This architecture ensures that the underlying LLM reasons over verified, structured diagnostic state rather than unstructured text dumps. This drastically reduces hallucinations and latency, providing verifiable provenance for every recommendation.
+
+---
+
+## 🏗️ System Architecture
+
+FieldMate operates on a state-of-the-art multi-tier pipeline:
 
 ```mermaid
 flowchart TD
@@ -61,76 +93,100 @@ flowchart TD
     LiveKit -->|Spoken Response| Tech
 ```
 
-## 3️⃣ Reproducibility
+---
+
+## 🚀 Reproducibility & Setup
+
+We have designed FieldMate to be easily reproducible. Follow the steps below to spin up your own instance.
 
 ### Prerequisites
-- **Python 3.12+** & [`uv`](https://github.com/astral-sh/uv) package manager
-- **Node.js 18+** & `npm`
-- API credentials for LiveKit Cloud, Deepgram, Groq, Rime, and Qdrant Cloud.
+- **Python 3.12+** and the [`uv`](https://github.com/astral-sh/uv) package manager.
+- **Node.js 18+** & `npm` for the frontend.
+- API credentials for **LiveKit Cloud**, **Deepgram**, **Groq**, **Rime**, and **Qdrant Cloud**.
 
-### Installation & Configuration
+### 1. Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/esotericdunce/fieldmate.git
-   cd fieldmate
-   ```
+Clone the repository and install the dependencies:
 
-2. **Configure Environment:**
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` and fill in your credentials:
-   ```env
-   LIVEKIT_URL=wss://your-livekit-project.livekit.cloud
-   LIVEKIT_API_KEY=your_livekit_api_key
-   LIVEKIT_API_SECRET=your_livekit_api_secret
-   DEEPGRAM_API_KEY=your_deepgram_api_key
-   GROQ_API_KEY=your_groq_api_key
-   RIME_API_KEY=your_rime_api_key
-   QDRANT_URL=https://your-qdrant-cluster.cloud.qdrant.io
-   QDRANT_API_KEY=your_qdrant_api_key
-   FIELDMATE_USER_ID=tech_john_doe
-   ```
+```bash
+# Clone the repo
+git clone https://github.com/esotericdunce/fieldmate.git
+cd fieldmate
 
-3. **Install Dependencies & Build Frontend:**
-   ```bash
-   uv sync
-   cd frontend
-   npm install && npm run build
-   cd ..
-   ```
+# Install Python dependencies using uv
+uv sync
 
-4. **Launch the Application:**
-   ```bash
-   uv run python main.py
-   ```
-   Open `http://localhost:8000` and click **Start Session**.
+# Build Frontend HUD
+cd frontend
+npm install && npm run build
+cd ..
+```
 
-### Verifying Results
-You can replicate our deterministic state engine and semantic cache benchmarks by running our extensive automated test suite:
+### 2. Configuration
+
+Create your environment configuration file:
+
+```bash
+cp .env.example .env
+```
+
+Populate `.env` with your API keys:
+
+```env
+LIVEKIT_URL=wss://your-livekit-project.livekit.cloud
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+
+DEEPGRAM_API_KEY=your_deepgram_api_key
+GROQ_API_KEY=your_groq_api_key
+RIME_API_KEY=your_rime_api_key
+
+QDRANT_URL=https://your-qdrant-cluster.cloud.qdrant.io
+QDRANT_API_KEY=your_qdrant_api_key
+
+FIELDMATE_USER_ID=tech_john_doe
+```
+
+### 3. Running the Server
+
+Start the unified server (spawns both the FastAPI web server and the LiveKit voice worker):
+
+```bash
+uv run python main.py
+```
+Open `http://localhost:8000` in your browser and click **Start Session** to begin.
+
+### 4. Running the Tests
+To verify the deterministic state engine and semantic cache benchmarks, run the automated test suite:
 ```bash
 PYTHONPATH=src uv run pytest
 ```
 
-## 4️⃣ Performance Metrics
+---
 
-FieldMate is engineered for ultra-low-latency real-time voice interaction. We actively monitor the following metrics:
+## 📊 Performance Metrics
 
-1. **Voice-to-Voice Latency (End-to-End): `< 800ms`**
-   - *Why chosen:* In voice interactions, any latency over 1 second feels unnatural and disrupts the conversational flow. Sub-800ms ensures the technician feels they are speaking with a responsive partner.
-2. **Tier 1 Cache Hit Latency (In-Memory LRU): `< 0.1ms`**
-   - *Why chosen:* Captures exact-match repeat queries instantly without network overhead, saving LLM and Qdrant round-trips.
-3. **Tier 2 Semantic Cache Latency (Qdrant Cloud): `< 15ms`**
-   - *Why chosen:* Validates that paraphrased identical intents are caught before invoking the LLM, reducing average generation time by up to 90% for common diagnostic loops.
-4. **Diagnostic State Atomicity Rollbacks: `100% Success Rate`**
-   - *Why chosen:* Measured via our adversarial test suite. It proves that invalid or hallucinated transitions are safely discarded without corrupting the canonical state.
+FieldMate is engineered for ultra-low-latency real-time voice interaction. We actively monitor the following critical metrics:
 
-## 5️⃣ Credits
+| Metric | Target | Why it was chosen |
+| :--- | :--- | :--- |
+| **End-to-End Voice Latency** | `< 800ms` | In voice interactions, latency over 1s breaks conversational flow. Sub-800ms ensures the technician feels they are speaking with a responsive human partner. |
+| **Tier 1 LRU Cache Hit** | `< 0.1ms` | Captures exact-match repeat queries instantly without network overhead, saving LLM and Qdrant round-trips. |
+| **Tier 2 Semantic Cache (Qdrant)** | `< 15ms` | Validates that paraphrased identical intents are caught before invoking the LLM, reducing generation time by up to 90% for common diagnostic loops. |
+| **State Atomicity Rollbacks** | `100% Success` | Proves that invalid or hallucinated LLM transitions are safely discarded without corrupting the canonical state. |
 
-A massive thank you to our incredible partners whose cutting-edge technology made FieldMate possible:
+---
 
-- 🤝 **Pathway**: For pioneering data processing and real-time streams.
-- 🤝 **Rime**: For the ultra-fast, expressive, and human-like neural TTS WebSocket streaming.
-- 🤝 **Weya**: For robust platform support and infrastructure.
-- 🤝 **Qdrant**: For powering both our sub-15ms semantic caching and our long-term hybrid dense/sparse diagnostic memory layer.
+## 🤝 Credits & Partners
+
+A massive thank you to our incredible partners whose cutting-edge technology made FieldMate possible. We are proud to build on top of their platforms:
+
+- 🌟 **Pathway**: For pioneering data processing and real-time streams.
+- 🌟 **Rime**: For the ultra-fast, expressive, and human-like neural TTS WebSocket streaming.
+- 🌟 **Weya**: For robust platform support and infrastructure.
+- 🌟 **Qdrant**: For powering both our sub-15ms semantic caching and our long-term hybrid dense/sparse diagnostic memory layer.
+
+<br/>
+<div align="center">
+  <sub>Built with ❤️ for field technicians everywhere.</sub>
+</div>
