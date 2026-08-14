@@ -158,7 +158,7 @@ FieldMate is engineered for ultra-low-latency real-time voice interaction. We ac
 - [x] Build multi-tier semantic cache (LRU + Qdrant)
 - [x] Design canonical diagnostic state engine
 - [x] Stream Deepgram Flux STT & Rime TTS
-- [ ] Add multimodal Vision Inspection (WebRTC Data Channel OCR)
+- [x] Add multimodal Vision Inspection (WebRTC Data Channel OCR)
 - [ ] Implement adaptive voice interruption tuning
 - [ ] Open-source the hardware diagnostic procedural datasets
 - [ ] Build standalone desktop electron wrapper for native hardware telemetry
