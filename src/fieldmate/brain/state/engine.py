@@ -188,6 +188,9 @@ class StateEngine:
             EventType.OBSERVATION_RECORDED:
                 self._observation_recorded,
 
+            EventType.VISUAL_OBSERVATION_RECORDED:
+                self._visual_observation_recorded,
+
             EventType.MEASUREMENT_RECORDED:
                 self._measurement_recorded,
 
@@ -619,6 +622,77 @@ class StateEngine:
         self.session.diagnostic.observations.append(
             observation
         )
+
+    def _visual_observation_recorded(
+        self,
+        event: DomainEvent,
+    ) -> None:
+        confidence = float(
+            event.payload.get(
+                "confidence",
+                1.0,
+            )
+        )
+
+        visual_facts = event.payload.get("visual_facts", [])
+        for fact in visual_facts:
+            self.session.diagnostic.observations.append(
+                Observation(
+                    name="visual_fact",
+                    value=fact,
+                    source=ObservationSource.CAMERA_VISION,
+                    status=ObservationStatus.VERIFIED,
+                    confidence=confidence,
+                )
+            )
+
+        contradictions = event.payload.get("contradictions", [])
+        for contradiction in contradictions:
+            self.session.diagnostic.observations.append(
+                Observation(
+                    name="contradiction",
+                    value=contradiction,
+                    source=ObservationSource.CAMERA_VISION,
+                    status=ObservationStatus.CONTRADICTED,
+                    confidence=confidence,
+                )
+            )
+
+        uncertain_observations = event.payload.get("uncertain_observations", [])
+        for uncertainty in uncertain_observations:
+            self.session.diagnostic.observations.append(
+                Observation(
+                    name="uncertain_observation",
+                    value=uncertainty,
+                    source=ObservationSource.CAMERA_VISION,
+                    status=ObservationStatus.REPORTED,
+                    confidence=0.5,
+                )
+            )
+
+        hardware_identifiers = event.payload.get("hardware_identifiers", {})
+        for key, value in hardware_identifiers.items():
+            self.session.diagnostic.observations.append(
+                Observation(
+                    name=f"hardware_identifier:{key}",
+                    value=value,
+                    source=ObservationSource.CAMERA_VISION,
+                    status=ObservationStatus.VERIFIED,
+                    confidence=confidence,
+                )
+            )
+
+        ocr_text = event.payload.get("ocr_text")
+        if ocr_text:
+            self.session.diagnostic.observations.append(
+                Observation(
+                    name="ocr_text",
+                    value=ocr_text,
+                    source=ObservationSource.CAMERA_VISION,
+                    status=ObservationStatus.VERIFIED,
+                    confidence=confidence,
+                )
+            )
 
     # =========================================================
     # MEASUREMENTS

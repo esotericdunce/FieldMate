@@ -48,6 +48,9 @@ class RetrievalResult:
     # require grounded reasoning.
     relevant: bool = False
 
+    cached_response: str | None = None
+    cached: bool = False
+
 
 # ============================================================
 # PREFETCH ENTRY
@@ -124,6 +127,7 @@ class RetrievalOrchestrator:
         prefetch_ttl_ms: int = 5000,
         relevance_threshold: float = 0.35,
         context_intelligence: ContextIntelligence | None = None,
+        semantic_cache: Any | None = None,
     ) -> None:
 
         if timeout_ms <= 0:
@@ -166,6 +170,8 @@ class RetrievalOrchestrator:
             context_intelligence
             or ContextIntelligence()
         )
+
+        self.semantic_cache = semantic_cache
 
         self._prefetch: dict[
             str,
@@ -224,9 +230,7 @@ class RetrievalOrchestrator:
 
         if not normalized_query:
             return RetrievalResult(
-                context=DiagnosticContext(
-                    memories=()
-                ),
+                context=DiagnosticContext(),
                 plan=plan_retrieval(""),
                 latency_ms=0.0,
             )
@@ -270,6 +274,38 @@ class RetrievalOrchestrator:
                 verified_only=verified_only,
             )
         )
+
+        # ----------------------------------------------------
+        # SEMANTIC CACHE HIT
+        # ----------------------------------------------------
+
+        if self.semantic_cache and getattr(self.semantic_cache, "enabled", True):
+            cached_result = await self.semantic_cache.lookup(
+                normalized_query,
+                owner_id=owner_id,
+                equipment_model=equipment_model,
+                equipment_family=equipment_family,
+                equipment_serial=equipment_serial,
+                system=system,
+                subsystem=subsystem,
+                component=component,
+                fault_code=fault_code,
+                verified_only=verified_only,
+            )
+            if cached_result is not None:
+                cached_context = cached_result.context
+                return RetrievalResult(
+                    context=cached_context,
+                    plan=plan,
+                    latency_ms=(
+                        time.perf_counter()
+                        - started
+                    ) * 1000.0,
+                    prefetched=False,
+                    relevant=self._context_is_relevant(cached_context) or bool(getattr(cached_result, "response_text", None)),
+                    cached_response=getattr(cached_result, "response_text", None),
+                    cached=True,
+                )
 
         # ----------------------------------------------------
         # PREFETCH HIT
@@ -325,7 +361,7 @@ class RetrievalOrchestrator:
                 )
             )
 
-        if prefetched is not None:
+        if prefetched:
             context = self._build_context(
                 prefetched,
                 state=state,
@@ -335,16 +371,17 @@ class RetrievalOrchestrator:
                 prefetched=True,
             )
 
-            return RetrievalResult(
-                context=context,
-                plan=plan,
-                latency_ms=(
-                    time.perf_counter()
-                    - started
-                ) * 1000.0,
-                prefetched=True,
-                relevant=self._context_is_relevant(context),
-            )
+            if self._context_is_relevant(context):
+                return RetrievalResult(
+                    context=context,
+                    plan=plan,
+                    latency_ms=(
+                        time.perf_counter()
+                        - started
+                    ) * 1000.0,
+                    prefetched=True,
+                    relevant=True,
+                )
 
         # ----------------------------------------------------
         # NORMAL BOUNDED RETRIEVAL
@@ -361,6 +398,7 @@ class RetrievalOrchestrator:
                 timeout=self.timeout_seconds,
             )
 
+
         except asyncio.TimeoutError:
 
             elapsed = (
@@ -369,9 +407,7 @@ class RetrievalOrchestrator:
             ) * 1000.0
 
             return RetrievalResult(
-                context=DiagnosticContext(
-                    memories=()
-                ),
+                context=DiagnosticContext(),
                 plan=plan,
                 latency_ms=elapsed,
                 timed_out=True,
@@ -392,9 +428,7 @@ class RetrievalOrchestrator:
             ) * 1000.0
 
             return RetrievalResult(
-                context=DiagnosticContext(
-                    memories=()
-                ),
+                context=DiagnosticContext(),
                 plan=plan,
                 latency_ms=elapsed,
                 relevant=False,
@@ -415,6 +449,38 @@ class RetrievalOrchestrator:
         relevant = self._context_is_relevant(
             context
         )
+
+        if relevant and self.semantic_cache and getattr(self.semantic_cache, "enabled", True):
+            if hasattr(self.semantic_cache, "store_background"):
+                self.semantic_cache.store_background(
+                    normalized_query,
+                    context,
+                    owner_id=owner_id,
+                    equipment_model=equipment_model,
+                    equipment_family=equipment_family,
+                    equipment_serial=equipment_serial,
+                    system=system,
+                    subsystem=subsystem,
+                    component=component,
+                    fault_code=fault_code,
+                    verified_only=verified_only,
+                )
+            else:
+                asyncio.create_task(
+                    self.semantic_cache.store(
+                        normalized_query,
+                        context,
+                        owner_id=owner_id,
+                        equipment_model=equipment_model,
+                        equipment_family=equipment_family,
+                        equipment_serial=equipment_serial,
+                        system=system,
+                        subsystem=subsystem,
+                        component=component,
+                        fault_code=fault_code,
+                        verified_only=verified_only,
+                    )
+                )
 
         elapsed = (
             time.perf_counter()
@@ -462,6 +528,11 @@ class RetrievalOrchestrator:
                         0.0,
                     )
                 )
+                mode = getattr(item, "retrieval_mode", "")
+                if mode == "hybrid" or score < 0.1:
+                    # Qdrant Reciprocal Rank Fusion (RRF) scores are mathematically bounded
+                    # in [0.016, 0.033]. Scale RRF scores to 0-1 range for relevance thresholding.
+                    score = min(1.0, score * 30.0)
             except (TypeError, ValueError):
                 score = 0.0
 
@@ -505,10 +576,9 @@ class RetrievalOrchestrator:
             retrieval_mode=retrieval_mode,
         )
 
+
         if not evidence:
-            return DiagnosticContext(
-                memories=()
-            )
+            return DiagnosticContext()
 
         # ----------------------------------------------------
         # State-aware context intelligence.

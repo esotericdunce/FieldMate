@@ -29,6 +29,10 @@ from .stabilizer import (
     normalize_transcript,
 )
 
+from .semantic_cache import (
+    QdrantSemanticCache,
+)
+
 __all__ = [
     "DiagnosticContext",
     "RetrievedMemory",
@@ -46,4 +50,5 @@ __all__ = [
     "StabilizationResult",
     "extract_entities",
     "normalize_transcript",
+    "QdrantSemanticCache",
 ]

@@ -855,6 +855,7 @@ class ContextIntelligence:
                 budgeted.neutral_evidence
             )
         )
+        print(f"DEBUG ContextIntelligence: evidence_items={len(evidence_items)}, selected={len(selected)}", flush=True)
 
         return context_from_evidence(
             selected,

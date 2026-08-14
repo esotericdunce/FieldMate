@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from .evidence import Evidence, normalize_evidence
-from fieldmate.brain.state.models import DiagnosticState
+from fieldmate.brain.models import DiagnosticContext
 
 
 # ============================================================
@@ -43,62 +43,6 @@ class RetrievedMemory:
     provenance: str = "qdrant_dense"
     case_reference: str | None = None
     retrieval_mode: str = "dense"
-
-
-# ============================================================
-# DIAGNOSTIC CONTEXT
-# ============================================================
-
-@dataclass(frozen=True)
-class DiagnosticContext:
-    """
-    Stable retrieval result passed toward the reasoning layer.
-
-    The context is intentionally immutable once constructed.
-
-    Retrieval may internally perform:
-
-        Qdrant
-          ↓
-        Evidence
-          ↓
-        ranking
-          ↓
-        budgeting
-          ↓
-        DiagnosticContext
-
-    Brain/reasoning code should consume this object rather than
-    depending directly on Qdrant types.
-    """
-
-    memories: tuple[RetrievedMemory, ...] = ()
-
-    # Rich evidence is retained alongside the compatibility
-    # memory representation.
-    #
-    # This allows future reasoning code to distinguish:
-    #
-    #   supporting evidence
-    #   contradicting evidence
-    #   neutral evidence
-    #
-    # without breaking the existing memories contract.
-    evidence: tuple[Evidence, ...] = ()
-
-    # Useful retrieval metadata.
-    query: str = ""
-
-    retrieval_mode: str = "dense"
-
-    # Approximate context size after retrieval/budgeting.
-    total_tokens_approx: int = 0
-
-    # Whether retrieval was completed from speculative prefetch.
-    prefetched: bool = False
-
-    # Whether retrieval exceeded the hot-path timeout.
-    timed_out: bool = False
 
 
 # ============================================================
@@ -292,12 +236,7 @@ def build_context(
     """
 
     if max_memories <= 0:
-        return DiagnosticContext(
-            memories=(),
-            evidence=(),
-            query=query,
-            retrieval_mode=retrieval_mode,
-        )
+        return DiagnosticContext()
 
     # --------------------------------------------------------
     # Normalize through the canonical Evidence layer.
@@ -311,12 +250,6 @@ def build_context(
 
     # --------------------------------------------------------
     # Deduplicate.
-    #
-    # Qdrant normally shouldn't return duplicate point IDs, but
-    # hybrid retrieval/test doubles can make duplicates possible.
-    #
-    # Content deduplication also protects the LLM context from
-    # receiving the same knowledge multiple times.
     # --------------------------------------------------------
 
     seen_memory_ids: set[str] = set()
@@ -362,25 +295,9 @@ def build_context(
         ):
             break
 
-    # --------------------------------------------------------
-    # Compatibility memory representation.
-    # --------------------------------------------------------
-
-    memories = tuple(
-        _memory_from_evidence(item)
-        for item in selected_evidence
-    )
-
+    ev_tuple = tuple(selected_evidence)
     return DiagnosticContext(
-        memories=memories,
-
-        evidence=tuple(
-            selected_evidence
-        ),
-
-        query=query,
-
-        retrieval_mode=retrieval_mode,
+        evidence=ev_tuple,
     )
 
 
@@ -413,32 +330,14 @@ def context_from_evidence(
             evidence[:max_memories]
         )
 
-    memories = tuple(
-        _memory_from_evidence(item)
-        for item in selected
-    )
-
     return DiagnosticContext(
-        memories=memories,
-
         evidence=selected,
-
-        query=query,
-
-        retrieval_mode=retrieval_mode,
-
-        total_tokens_approx=(
-            max(
-                0,
-                int(
-                    total_tokens_approx
-                ),
-            )
-        ),
-
-        prefetched=prefetched,
-
-        timed_out=timed_out,
+        supporting=tuple(e for e in selected if e.relation == "supporting"),
+        contradicting=tuple(e for e in selected if e.relation == "contradicting"),
+        neutral=tuple(e for e in selected if e.relation == "neutral"),
+        procedures=tuple(e for e in selected if e.memory_type == "procedure"),
+        past_cases=tuple(e for e in selected if e.memory_type in ("case", "episodic")),
+        resolutions=tuple(e for e in selected if e.memory_type == "resolution"),
     )
 
 
@@ -464,12 +363,4 @@ def empty_context(
     diagnostic state and conversation.
     """
 
-    return DiagnosticContext(
-        memories=(),
-        evidence=(),
-        query=query,
-        retrieval_mode=retrieval_mode,
-        total_tokens_approx=0,
-        prefetched=False,
-        timed_out=timed_out,
-    )
+    return DiagnosticContext()

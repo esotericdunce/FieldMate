@@ -308,6 +308,32 @@ class ParallelTurnRouter:
                 return
 
             # =================================================
+            # SEMANTIC CACHE FAST PATH HIT (<10ms)
+            # =================================================
+
+            if (
+                getattr(retrieval_result, "cached", False)
+                and getattr(retrieval_result, "cached_response", None)
+                and isinstance(retrieval_result.cached_response, str)
+            ):
+                cached_text = str(retrieval_result.cached_response)
+                logger.info(
+                    ">>> SEMANTIC CACHE FAST PATH HIT: yielding cached response in %.1fms",
+                    retrieval_latency_ms,
+                )
+                speculative_task.cancel()
+                try:
+                    await speculative_task
+                except asyncio.CancelledError:
+                    pass
+
+                if not generation_is_current():
+                    return
+
+                yield cached_text
+                return
+
+            # =================================================
             # QDRANT PASS
             # =================================================
 

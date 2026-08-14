@@ -1,18 +1,29 @@
-# 🛠️ FieldMate — Real-time Voice Diagnostic Partner
+# 🛠️ FieldMate — Real-Time Voice Diagnostic Partner
 
 FieldMate is an ultra-low-latency, voice-first field diagnostic assistant engineered for hardware, software, and network troubleshooting on Windows PCs and laptops (Lenovo, Dell, HP, ASUS).
 
-Unlike generic conversational RAG chatbots, FieldMate **owns canonical diagnostic state** and uses a deterministic state engine, evolving vector memory with Qdrant, speculative prefetching, and high-performance streaming voice tools to act as an active diagnostic partner for field technicians.
+Unlike generic conversational RAG chatbots, FieldMate **owns canonical diagnostic state** and pairs a deterministic state engine with **multi-tier semantic caching**, **long-term episodic vector memory with Qdrant**, **multimodal vision inspection**, and **real-time streaming voice tools** to act as an active diagnostic partner for field technicians.
 
 ---
 
-## 🌟 Key Differentiators
+## 🌟 Key Capabilities & Differentiators
 
-* **Canonical Diagnostic State Engine**: The application owns and validates state transitions deterministically with immutable event logs and rollbacks. The LLM reasons *over* state and evidence rather than hallucinating state.
-* **State-Aware Qdrant Retrieval**: Uses hybrid dense (`all-MiniLM-L6-v2`) and sparse (`BM25`) search over Qdrant Cloud to retrieve structured technical manuals, prior cases, and fault correlations.
-* **Speculative Voice Prefetching**: Integrates query stabilization on streaming STT partials to launch speculative vector searches *before* the technician finishes speaking, delivering response latencies under ~0.2ms for pre-fetched context.
-* **Evolving Memory Lifecycle**: Tracks evidence provenance, resolution confidence, and domain contradictions across cases without premature generalization.
-* **Ultra-Low Latency Voice Pipeline**: Powered by LiveKit WebRTC transport, Deepgram streaming STT, Groq LLM inference, and Rime Neural TTS.
+* ⚡ **3-Tier Smart Semantic Cache**:
+  - **Tier 1 (In-Memory LRU)**: Sub-millisecond (`<0.1ms`) memory cache for repeated queries.
+  - **Tier 2 (Qdrant Semantic Cache)**: Real-time vector cosine similarity (`<10ms`) across paraphrases with strict user isolation (`owner_id`), hardware context tagging, and cross-restart persistence.
+  - **Tier 3 (Groq LPU Generation)**: Ultra-fast LLM inference using Groq `llama-3.1-8b-instant`.
+* 🧠 **Long-Term Domain & Resolution Memory (`fieldmate_memory`)**:
+  - Hybrid Dense (`all-MiniLM-L6-v2`) + Sparse (`BM25`) search over Qdrant Cloud.
+  - Stores verified engineering procedures, past confirmed case resolutions, and evidence provenance.
+* 🔄 **Multi-Turn Elliptical Context Assembly**:
+  - Automatically reconstructs short or staggered technician utterances (e.g., Turn 1: *"my laptop keyboard light won't turn on"* ➔ Turn 2: *"its dell, how to fix it"*) to retrieve and cite past verified fixes.
+* 👁️ **Multimodal Visual Inspection**:
+  - Real-time video snapshot capture over LiveKit WebRTC data channel.
+  - Groq Vision inference (`qwen/qwen3.6-27b`) for motherboard capacitor inspection, physical port damage, and BIOS/BSOD error code OCR.
+* 🎙️ **Real-Time Voice Pipeline & Dual TTS Engine**:
+  - LiveKit WebRTC transport + Deepgram Flux streaming STT.
+  - Dual TTS support: **Rime Neural TTS** (WebSocket streaming) and **Deepgram Aura TTS** (`aura-asteria-en`).
+  - Acoustic-guarded barge-in interruption.
 
 ---
 
@@ -20,19 +31,49 @@ Unlike generic conversational RAG chatbots, FieldMate **owns canonical diagnosti
 
 ```mermaid
 flowchart TD
-    Technician[🎙️ Technician Speech] -->|LiveKit WebRTC| VoiceAgent[⚡ Voice Agent Worker]
-    VoiceAgent -->|Streaming STT| Deepgram[Deepgram Flux STT]
-    Deepgram -->|Partials / EOT| Stabilizer[Query Stabilizer]
+    subgraph Voice_Layer["🎙️ Real-Time Voice & Video Layer"]
+        Tech["👨‍🔧 Technician (Voice & Camera)"]
+        LiveKit["⚡ LiveKit WebRTC Transport"]
+        DeepgramSTT["🎧 Deepgram Flux Streaming STT"]
+        Vision["📷 WebRTC Vision Snapshot OCR"]
+    end
+
+    subgraph Memory_Layer["🧠 Qdrant Dual-Layer Memory & Cache"]
+        LRU["⚡ Tier 1: In-Memory LRU Cache (<0.1ms)"]
+        SemCache["⚡ Tier 2: Qdrant Semantic Cache (<10ms)"]
+        DomainMem["📚 Tier 3: Qdrant Hybrid Memory (Dense + BM25)"]
+    end
+
+    subgraph Brain_Layer["⚙️ State Engine & Diagnostic Reasoning"]
+        Stabilizer["🎛️ Query Stabilizer & Prefetcher"]
+        StateEngine["🔒 Deterministic State Engine"]
+        Context["🧩 Context Assembler & Multi-Turn Joiner"]
+        Groq["⚡ Groq LPU (llama-3.1-8b / qwen-vision)"]
+    end
+
+    subgraph Speech_Layer["🔊 Speech Synthesis (TTS)"]
+        TTS["🔊 Rime WebSocket / Deepgram Aura TTS"]
+    end
+
+    Tech -->|Audio / Video| LiveKit
+    LiveKit -->|Audio Frames| DeepgramSTT
+    LiveKit -->|Data Channel Image| Vision
     
-    Stabilizer -->|Speculative Search| Qdrant[Qdrant Cloud Vector DB]
-    Stabilizer -->|State Event| StateEngine[Deterministic State Engine]
+    DeepgramSTT -->|Streaming Partials & EOT| Stabilizer
+    Stabilizer -->|Check Cache| LRU
+    LRU -->|Miss| SemCache
+    SemCache -->|Miss| DomainMem
     
-    StateEngine -->|Canonical State| ContextBuilder[Evidence & Context Assembler]
-    Qdrant -->|Retrieved Evidence| ContextBuilder
+    Stabilizer -->|Domain Events| StateEngine
+    StateEngine -->|Canonical State| Context
+    DomainMem -->|Retrieved Evidence & Fixes| Context
+    Vision -->|Visual Findings| Context
     
-    ContextBuilder --> Groq[Groq LLM Reasoning]
-    Groq -->|Streaming Response| Rime[Rime Neural TTS]
-    Rime -->|Audio Stream| Technician
+    Context -->|Grounded Prompt| Groq
+    SemCache -->|Fastpath Hit| LiveKit
+    Groq -->|Streaming Tokens| TTS
+    TTS -->|Audio Stream| LiveKit
+    LiveKit -->|Spoken Response| Tech
 ```
 
 ---
@@ -51,24 +92,25 @@ FieldMate is deeply optimized for **Windows PCs & Laptops** across four primary 
 
 ## 🛠️ Tech Stack
 
-| Layer | Technology |
-| :--- | :--- |
-| **Realtime Transport** | [LiveKit Agent SDK](https://livekit.io) |
-| **Speech-to-Text (STT)** | [Deepgram Flux Streaming](https://deepgram.com) |
-| **Text-to-Speech (TTS)** | [Rime AI](https://rime.ai) |
-| **LLM Reasoning** | [Groq](https://groq.com) |
-| **Vector DB / Memory** | [Qdrant Cloud](https://qdrant.tech) (Dense + BM25 Hybrid Search) |
-| **Backend Orchestration** | FastAPI, Python 3.12, `uv` |
-| **Frontend HUD** | React, Vite, LiveKit Web Components, Lucide Icons |
+| Layer | Technology | Purpose |
+| :--- | :--- | :--- |
+| **Realtime Transport** | [LiveKit Agent SDK](https://livekit.io) | Sub-100ms WebRTC voice & video transport |
+| **Speech-to-Text (STT)** | [Deepgram Flux Streaming](https://deepgram.com) | Real-time endpointing and speech-to-text |
+| **Text-to-Speech (TTS)** | [Rime AI](https://rime.ai) & [Deepgram Aura](https://deepgram.com) | Ultra-smooth neural voice synthesis |
+| **LLM & Vision Inference** | [Groq](https://groq.com) | Llama 3.1 8B Instant & Qwen 3.6 27B Vision |
+| **Semantic Cache** | [Qdrant Cloud](https://qdrant.tech) (`fieldmate_semantic_cache`) | Sub-10ms query/response caching |
+| **Domain Vector Memory** | [Qdrant Cloud](https://qdrant.tech) (`fieldmate_memory`) | Dense + BM25 Hybrid Case & Procedure Retrieval |
+| **Backend Framework** | FastAPI, Python 3.12, `uv` | High-concurrency async orchestration |
+| **Frontend HUD** | React, Vite, LiveKit Web Components, Lucide | Real-time audio waveform, logs, and state HUD |
 
 ---
 
 ## 🚀 Quickstart Guide
 
 ### 1. Prerequisites
-- **Python 3.12+** & [`uv`](https://github.com/astral-sh/uv) package manager installed
-- **Node.js 18+** & `npm` installed
-- Accounts & API keys for LiveKit Cloud, Deepgram, Groq, Rime, and Qdrant Cloud.
+- **Python 3.12+** & [`uv`](https://github.com/astral-sh/uv) package manager
+- **Node.js 18+** & `npm`
+- API credentials for LiveKit Cloud, Deepgram, Groq, Rime, and Qdrant Cloud.
 
 ### 2. Installation & Configuration
 
@@ -83,7 +125,7 @@ Create your environment configuration:
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your API credentials:
+Edit `.env` and fill in your credentials:
 ```env
 LIVEKIT_URL=wss://your-livekit-project.livekit.cloud
 LIVEKIT_API_KEY=your_livekit_api_key
@@ -95,33 +137,29 @@ RIME_API_KEY=your_rime_api_key
 
 QDRANT_URL=https://your-qdrant-cluster.cloud.qdrant.io
 QDRANT_API_KEY=your_qdrant_api_key
+
+# Optional Customizations:
+FIELDMATE_USER_ID=tech_john_doe
+FIELDMATE_SEMANTIC_CACHE_THRESHOLD=0.75
+FIELDMATE_TTS_PROVIDER=rime  # or 'deepgram'
 ```
 
 ### 3. Install Dependencies & Build Frontend
 
-Install Python dependencies:
 ```bash
+# Install Python dependencies
 uv sync
-```
 
-Install Node dependencies and build the static frontend:
-```bash
+# Build Frontend HUD
 cd frontend
 npm install
 npm run build
 cd ..
 ```
 
-### 4. (Optional) Ingest Technical Knowledge Base
+### 4. Launch FieldMate
 
-If setting up a fresh Qdrant collection, ingest technical documents:
-```bash
-uv run python -m fieldmate.ingest --dir /path/to/troubleshooting/docs/
-```
-
-### 5. Launch FieldMate
-
-Start the unified server (spawns FastAPI web server + LiveKit voice worker):
+Start the unified server (spawns FastAPI web server on `:8000` + LiveKit voice worker):
 ```bash
 uv run python main.py
 ```
@@ -130,19 +168,19 @@ Open your browser and navigate to:
 ```
 http://localhost:8000
 ```
-Click **Start Session** and begin speaking to your diagnostic partner!
+Click **Start Session** to start diagnosing!
 
 ---
 
 ## 🧪 Testing & Verification
 
-Run the full test suite (including deterministic state engine, atomicity, idempotency, and retrieval tests):
+Run the full automated test suite (including deterministic state engine, semantic cache multi-process persistence, atomicity, idempotency, and vision tests):
 ```bash
-uv run pytest
+PYTHONPATH=src uv run pytest
 ```
 
 ---
 
 ## 📜 License
 
-MIT License — feel free to use and adapt FieldMate for your own diagnostic and realtime AI applications!
+MIT License — feel free to use and adapt FieldMate for your own diagnostic and real-time AI applications!

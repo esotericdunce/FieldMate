@@ -3,17 +3,19 @@ import sys
 import os
 import uvicorn
 import asyncio
+from typing import Any
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from livekit import api
-
 from fastapi.middleware.cors import CORSMiddleware
+
+from fieldmate.brain.runtime import build_brain_runtime
 
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(title="FieldMate Diagnostic Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,15 +25,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import uuid
+# Active session Brain registry for multimodal inspections
+active_runtimes: dict[str, Any] = {}
+
 
 # Generate LiveKit Token & Dispatch Agent
 @app.get("/api/token")
 async def get_token(room: str | None = None, username: str | None = None):
     if not room:
-        room = f"fieldmate-{uuid.uuid4().hex[:8]}"
+        room = os.getenv("FIELDMATE_ROOM_NAME", "fieldmate_dev_room")
     if not username:
-        username = f"user-{uuid.uuid4().hex[:4]}"
+        username = os.getenv("FIELDMATE_USER_ID", "tech_john_doe")
 
     api_key = os.getenv("LIVEKIT_API_KEY")
     api_secret = os.getenv("LIVEKIT_API_SECRET")
@@ -52,21 +56,63 @@ async def get_token(room: str | None = None, username: str | None = None):
         )
     ).to_jwt()
 
-    # Explicitly dispatch fieldmate agent worker to this room
-    lkapi = api.LiveKitAPI(url, api_key, api_secret)
+    # Ensure fieldmate agent worker is dispatched to the room
     try:
+        lkapi = api.LiveKitAPI(url, api_key, api_secret)
         await lkapi.agent_dispatch.create_dispatch(
             api.CreateAgentDispatchRequest(
                 agent_name="fieldmate",
                 room=room,
             )
         )
-    except Exception as e:
-        print(f"Agent dispatch warning/error: {e}")
-    finally:
         await lkapi.aclose()
-    
-    return {"token": token, "url": url}
+    except Exception as e:
+        print(f"Agent dispatch status: {e}")
+
+    return {"token": token, "url": url, "room": room}
+
+
+# Multimodal Hardware Inspection Endpoint
+@app.post("/api/inspect")
+async def inspect_hardware(
+    image: UploadFile = File(...),
+    session_id: str = Form("fieldmate_dev_room"),
+    user_utterance: str | None = Form(None),
+):
+    try:
+        image_bytes = await image.read()
+        if not image_bytes:
+            return JSONResponse(status_code=400, content={"error": "Empty image provided."})
+
+        if session_id not in active_runtimes:
+            runtime = build_brain_runtime(session_id=session_id)
+            try:
+                await runtime.ensure_ready()
+            except Exception as e:
+                print(f"Qdrant bootstrap notice: {e}")
+            active_runtimes[session_id] = runtime
+
+        runtime = active_runtimes[session_id]
+        result = await runtime.brain.process_image(
+            image_bytes=image_bytes,
+            user_utterance=user_utterance,
+        )
+
+        decision = result.decision
+        return {
+            "response": result.response,
+            "hypothesis": decision.hypothesis if decision else None,
+            "confidence": decision.confidence if decision else 0.0,
+            "next_action": decision.next_action if decision else None,
+            "clarification_needed": decision.clarification_needed if decision else False,
+            "clarification_question": decision.clarification_question if decision else None,
+            "turn": result.turn,
+            "generation": result.generation,
+        }
+    except Exception as exc:
+        print(f"Inspection error: {exc}")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
 
 # Serve static frontend files
 frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
@@ -81,6 +127,8 @@ if __name__ == "__main__":
     print("Starting FieldMate Voice Agent Worker in the background...")
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+    env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
     agent_proc = subprocess.Popen([sys.executable, "-m", "fieldmate.voice_agent", "dev"], env=env)
     
     try:

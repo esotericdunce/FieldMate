@@ -93,6 +93,7 @@ class ObservationSource(str, Enum):
     DOCUMENT = "document"
     MEMORY = "memory"
     INFERENCE = "inference"
+    CAMERA_VISION = "camera_vision"
 
 
 class ObservationStatus(str, Enum):
@@ -719,6 +720,7 @@ class FieldMateSession:
     """
 
     session_id: str
+    owner_id: str | None = None
 
     diagnostic: DiagnosticState = field(
         default_factory=DiagnosticState
@@ -741,3 +743,5 @@ class FieldMateSession:
             self.session_id,
             "session_id",
         )
+        if self.owner_id is not None and isinstance(self.owner_id, str):
+            self.owner_id = self.owner_id.strip() or None

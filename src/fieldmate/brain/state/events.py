@@ -92,6 +92,8 @@ class EventType(str, Enum):
 
     OBSERVATION_RECORDED = "observation_recorded"
 
+    VISUAL_OBSERVATION_RECORDED = "visual_observation_recorded"
+
     MEASUREMENT_RECORDED = "measurement_recorded"
 
     TEST_STARTED = "test_started"
@@ -111,6 +113,23 @@ class EventType(str, Enum):
     RESOLUTION_CONFIRMED = "resolution_confirmed"
 
     CASE_CLOSED = "case_closed"
+
+
+# ============================================================
+# PAYLOADS
+# ============================================================
+
+@dataclass(frozen=True)
+class VisualObservationPayload:
+    """
+    Structured payload for VISUAL_OBSERVATION_RECORDED events.
+    """
+    visual_facts: list[str] = field(default_factory=list)
+    hardware_identifiers: dict[str, str] = field(default_factory=dict)
+    ocr_text: str | None = None
+    contradictions: list[str] = field(default_factory=list)
+    confidence: float = 1.0
+    source: str = "camera_vision"
 
 
 # ============================================================

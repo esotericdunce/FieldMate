@@ -292,6 +292,10 @@ class QdrantMemoryRepository:
             models.Condition
         ] = []
 
+        must_not: list[
+            models.Condition
+        ] = []
+
         # -----------------------------------------------------
         # EQUIPMENT
         # -----------------------------------------------------
@@ -435,11 +439,11 @@ class QdrantMemoryRepository:
 
         if owner_id:
 
-            conditions.append(
+            must_not.append(
                 models.FieldCondition(
                     key="owner_id",
-                    match=models.MatchValue(
-                        value=owner_id
+                    match=models.MatchExcept(
+                        **{"except": [owner_id]}
                     ),
                 )
             )
@@ -447,10 +451,6 @@ class QdrantMemoryRepository:
         # -----------------------------------------------------
         # DEPRECATED MEMORY PROTECTION
         # -----------------------------------------------------
-
-        must_not: list[
-            models.Condition
-        ] = []
 
         if not include_deprecated:
 

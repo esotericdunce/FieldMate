@@ -31,7 +31,12 @@ from fieldmate.brain.qdrant.repository import (
 from fieldmate.brain.retrieval.orchestrator import (
     RetrievalOrchestrator,
 )
+from fieldmate.brain.retrieval.semantic_cache import (
+    QdrantSemanticCache,
+)
 
+from fieldmate.brain.models import DiagnosticContext
+from fieldmate.brain.runtime import build_brain_runtime
 from fieldmate.brain.voice_router import (
     ParallelTurnRouter,
 )
@@ -160,7 +165,7 @@ GROQ_TIMEOUT_SECONDS = float(
 RETRIEVAL_TIMEOUT_MS = int(
     os.getenv(
         "FIELDMATE_RETRIEVAL_TIMEOUT_MS",
-        "600",
+        "1200",
     )
 )
 
@@ -298,6 +303,18 @@ configuration and common client/router interaction.
 DIAGNOSTIC DISCIPLINE
 ---------------------
 You are assisting a technician.
+
+Hierarchy of Evidence:
+1. User Claims -> Reported verbal statements by the technician.
+2. Visual Observations -> Directly observed physical camera evidence and OCR.
+3. Measurements -> Sensor readings with units.
+4. Retrieved Documentation -> Manufacturer service manuals and verified case resolutions.
+
+CONTRADICTION RULE:
+When a technician's verbal statement conflicts with physical camera evidence (e.g. technician says "fan isn't spinning" but visual evidence shows "fan blades visibly rotating"), NEVER blindly accept the false premise. Politely flag the discrepancy and ask for clarification.
+
+ACTIVE INSPECTION:
+When diagnostic evidence is incomplete, recommend the specific next physical check or camera view in your response.
 
 Treat observations as observations.
 
@@ -1095,6 +1112,8 @@ class GenerationController:
         self,
     ) -> int:
 
+        current = asyncio.current_task()
+
         async with self._lock:
 
             self.generation += 1
@@ -1107,10 +1126,11 @@ class GenerationController:
                 self.active_task
             )
 
-            self.active_task = None
+            self.active_task = current
 
         if (
             old_task is not None
+            and old_task is not current
             and not old_task.done()
         ):
             old_task.cancel()
@@ -1152,6 +1172,14 @@ class GenerationController:
             task.cancel()
 
         self.active_task = None
+
+        speech = getattr(self, "active_speech", None)
+        if speech is not None and not getattr(speech, "interrupted", False):
+            try:
+                speech.interrupt(force=True)
+            except Exception:
+                pass
+        self.active_speech = None
 
     def invalidate(
         self,
@@ -1253,6 +1281,8 @@ class VoiceBrain:
         repository: QdrantMemoryRepository,
         retrieval: RetrievalOrchestrator,
         groq: AsyncOpenAI,
+        owner_id: str | None = None,
+        canonical_brain: Any = None,
     ) -> None:
 
         self.repository = repository
@@ -1260,6 +1290,10 @@ class VoiceBrain:
         self.retrieval = retrieval
 
         self.groq = groq
+
+        self.owner_id = owner_id
+
+        self.canonical_brain = canonical_brain
 
     # --------------------------------------------------------
     # SPECULATION
@@ -1294,6 +1328,7 @@ class VoiceBrain:
 
             await self.retrieval.prefetch(
                 query,
+                owner_id=self.owner_id,
                 limit=RETRIEVAL_LIMIT,
             )
 
@@ -1316,10 +1351,12 @@ class VoiceBrain:
     async def retrieve(
         self,
         query: str,
+        owner_id: str | None = None,
     ) -> Any:
 
         return await self.retrieval.retrieve(
             query,
+            owner_id=owner_id or self.owner_id,
             limit=RETRIEVAL_LIMIT,
         )
 
@@ -1446,6 +1483,8 @@ Preserve uncertainty and contradictions.
 
 Do not mention "Qdrant", "retrieval", "vector database",
 "embedding", or internal system mechanics to the technician.
+
+If the retrieved evidence contains a previous confirmed resolution or fix for this machine or symptom, explicitly recommend or cite it to the technician (for example: "Last time / in a previous case, switching to power-saving mode resolved this issue. Would you like to try that?").
 
 RETRIEVED EVIDENCE:
 """
@@ -1634,9 +1673,19 @@ RETRIEVED EVIDENCE:
         # QDRANT SIDE
         # ----------------------------------------------------
 
+        # Build enriched retrieval query from conversation history if user_text is short or elliptical
+        retrieval_query = user_text
+        if len(user_text.split()) <= 7 and history:
+            prior_user_turns = [
+                m["content"] for m in history
+                if m.get("role") == "user" and m.get("content")
+            ]
+            if prior_user_turns:
+                retrieval_query = f"{prior_user_turns[-1]} {user_text}"
+
         async def retrieve() -> Any:
             return await self.retrieve(
-                user_text
+                retrieval_query
             )
 
         # ----------------------------------------------------
@@ -1771,17 +1820,13 @@ class FieldMate(Agent):
         self,
     ) -> None:
 
-        # Deterministic greeting.
-        #
-        # No Qdrant.
-        # No Groq.
-        # No unnecessary cold inference.
-        #
-        # This makes the voice transport available immediately.
+        logger.info(
+            ">>> FIELDMATE AGENT ON_ENTER: SENDING GREETING SPEECH"
+        )
 
         await self.session.say(
             "FieldMate is ready. What are we troubleshooting?",
-            allow_interruptions=True,
+            allow_interruptions=False,
         )
 
 
@@ -1845,6 +1890,35 @@ async def entrypoint(
             )
         )
 
+        semantic_cache_enabled = (
+            os.getenv(
+                "FIELDMATE_SEMANTIC_CACHE_ENABLED",
+                "true",
+            ).lower()
+            == "true"
+        )
+
+        semantic_cache = QdrantSemanticCache(
+            repository,
+            collection_name=os.getenv(
+                "FIELDMATE_SEMANTIC_CACHE_COLLECTION",
+                "fieldmate_semantic_cache",
+            ),
+            threshold=float(
+                os.getenv(
+                    "FIELDMATE_SEMANTIC_CACHE_THRESHOLD",
+                    "0.90",
+                )
+            ),
+            ttl_seconds=float(
+                os.getenv(
+                    "FIELDMATE_SEMANTIC_CACHE_TTL_SECONDS",
+                    "86400.0",
+                )
+            ),
+            enabled=semantic_cache_enabled,
+        )
+
         # ----------------------------------------------------
         # RETRIEVAL ORCHESTRATOR
         # ----------------------------------------------------
@@ -1861,6 +1935,7 @@ async def entrypoint(
                 prefetch_ttl_ms=(
                     PREFETCH_TTL_MS
                 ),
+                semantic_cache=semantic_cache,
             )
         )
 
@@ -1881,10 +1956,53 @@ async def entrypoint(
             base_url=GROQ_BASE_URL,
         )
 
+        def resolve_user_identity() -> str:
+            # 1. Environment variable override (ideal for local testing)
+            env_user = os.getenv("FIELDMATE_USER_ID")
+            if env_user and env_user.strip():
+                return env_user.strip()
+
+            # 2. Job Metadata JSON (e.g. {"user_id": "tech_123"})
+            if getattr(ctx, "job", None) and getattr(ctx.job, "metadata", None):
+                try:
+                    meta = json.loads(ctx.job.metadata)
+                    if isinstance(meta, dict) and meta.get("user_id"):
+                        return str(meta["user_id"]).strip()
+                except Exception:
+                    pass
+
+            # 3. Connected Remote Participant Identity (LiveKit JWT auth)
+            if getattr(ctx, "room", None) and getattr(ctx.room, "remote_participants", None):
+                for participant in ctx.room.remote_participants.values():
+                    p_id = getattr(participant, "identity", None)
+                    if p_id and p_id.strip() and not str(p_id).startswith("agent-") and not str(p_id).startswith("fieldmate"):
+                        return str(p_id).strip()
+
+            # 4. Room Name / Job ID fallback
+            if getattr(ctx, "room", None) and getattr(ctx.room, "name", None):
+                return str(ctx.room.name).strip()
+
+            if getattr(ctx, "job", None) and getattr(ctx.job, "id", None):
+                return str(ctx.job.id).strip()
+
+            return "default_user"
+
+        user_identity = resolve_user_identity()
+
+        brain_runtime = build_brain_runtime(
+            session_id=str(getattr(ctx.room, "name", "fieldmate_dev_room")),
+            owner_id=user_identity,
+            repository=repository,
+            retrieval=retrieval,
+        )
+        canonical_brain = brain_runtime.brain
+
         brain = VoiceBrain(
             repository=repository,
             retrieval=retrieval,
             groq=groq,
+            owner_id=user_identity,
+            canonical_brain=canonical_brain,
         )
 
         # Prime independent remote resources concurrently.
@@ -1894,6 +2012,7 @@ async def entrypoint(
         qdrant_started = time.perf_counter()
         await asyncio.gather(
             repository.ensure_collection(),
+            semantic_cache.ensure_collection(),
             brain.warm(),
         )
         logger.info(
@@ -1902,10 +2021,7 @@ async def entrypoint(
         )
 
         parallel_router = ParallelTurnRouter(
-            qdrant_timeout_ms=min(
-                350,
-                RETRIEVAL_TIMEOUT_MS,
-            ),
+            qdrant_timeout_ms=RETRIEVAL_TIMEOUT_MS,
         )
 
         # ----------------------------------------------------
@@ -1917,28 +2033,6 @@ async def entrypoint(
             eager_eot_threshold=FLUX_EAGER_EOT,
             eot_threshold=FLUX_EOT_THRESHOLD,
             eot_timeout_ms=FLUX_EOT_TIMEOUT_MS,
-            keyterm=[
-                "Lenovo",
-                "Dell",
-                "HP",
-                "ASUS",
-                "Windows",
-                "BIOS",
-                "UEFI",
-                "Wi-Fi",
-                "Ethernet",
-                "CPU",
-                "GPU",
-                "RAM",
-                "SSD",
-                "NVMe",
-                "SATA",
-                "BSOD",
-                "WHEA",
-                "driver",
-                "fault",
-                "error",
-            ],
         )
 
         logger.info(
@@ -1954,28 +2048,40 @@ async def entrypoint(
         )
 
         # ----------------------------------------------------
-        # RIME
+        # TTS (RIME / DEEPGRAM AURA)
         # ----------------------------------------------------
 
-        tts = rime.TTS(
-            model=RIME_MODEL,
-            speaker=RIME_SPEAKER,
-            sample_rate=RIME_SAMPLE_RATE,
-            use_websocket=True,
-            segment="immediate",
-        )
-
-        logger.info(
-            ">>> RIME READY "
-            "model=%s "
-            "speaker=%s "
-            "rate=%d "
-            "websocket=true "
-            "segment=immediate",
-            RIME_MODEL,
-            RIME_SPEAKER,
-            RIME_SAMPLE_RATE,
-        )
+        tts_provider = os.getenv("FIELDMATE_TTS_PROVIDER", "rime").lower().strip()
+        if tts_provider == "deepgram":
+            tts_model = os.getenv("DEEPGRAM_TTS_MODEL", "aura-asteria-en")
+            tts = deepgram.TTS(
+                model=tts_model,
+                sample_rate=RIME_SAMPLE_RATE,
+            )
+            logger.info(
+                ">>> DEEPGRAM AURA TTS READY "
+                "model=%s "
+                "rate=%d",
+                tts_model,
+                RIME_SAMPLE_RATE,
+            )
+        else:
+            tts = rime.TTS(
+                model=RIME_MODEL,
+                speaker=RIME_SPEAKER,
+                sample_rate=RIME_SAMPLE_RATE,
+                use_websocket=True,
+            )
+            logger.info(
+                ">>> RIME READY "
+                "model=%s "
+                "speaker=%s "
+                "rate=%d "
+                "websocket=true",
+                RIME_MODEL,
+                RIME_SPEAKER,
+                RIME_SAMPLE_RATE,
+            )
 
         # ----------------------------------------------------
         # SESSION
@@ -2128,8 +2234,19 @@ async def entrypoint(
                 transcript
             )
 
-            if not transcript:
-                return
+            nonlocal user_identity
+            env_user = os.getenv("FIELDMATE_USER_ID")
+            if env_user and env_user.strip():
+                user_identity = env_user.strip()
+            elif ctx.room and getattr(ctx.room, "remote_participants", None):
+                for participant in ctx.room.remote_participants.values():
+                    p_id = getattr(participant, "identity", None)
+                    if p_id and p_id.strip() and not str(p_id).startswith("agent-") and not str(p_id).startswith("fieldmate"):
+                        user_identity = str(p_id).strip()
+                        brain.owner_id = user_identity
+                        if hasattr(brain, "canonical_brain") and brain.canonical_brain:
+                            brain.canonical_brain.state.session.owner_id = user_identity
+                        break
 
             # A finalized turn establishes a new speculative
             # baseline. The completed result itself remains in
@@ -2202,12 +2319,7 @@ async def entrypoint(
 
                 parallel_router = (
                     ParallelTurnRouter(
-                        # Never hold a conversational response
-                        # hostage to a remote Qdrant request.
-                        qdrant_timeout_ms=min(
-                            350,
-                            RETRIEVAL_TIMEOUT_MS,
-                        ),
+                        qdrant_timeout_ms=RETRIEVAL_TIMEOUT_MS,
                     )
                 )
 
@@ -2235,22 +2347,16 @@ async def entrypoint(
                                 generation
                             ):
                                 logger.info(
-                                    ">>> PARALLEL STREAM "
-                                    "INVALIDATED "
-                                    "generation=%d",
+                                    ">>> TURN %d DISCARDED "
+                                    "(STALE GENERATION)",
                                     generation,
                                 )
-
                                 return
 
                             response_parts.append(
                                 chunk
                             )
 
-                            # Start next-turn retrieval while
-                            # Rime is speaking. Do this once the
-                            # response has enough semantic material
-                            # to be useful, and never await it.
                             if (
                                 not warm_started
                                 and sum(
@@ -2277,64 +2383,57 @@ async def entrypoint(
                                     ">>> NEXT-TURN WARM STARTED"
                                 )
 
-                            buffer += chunk
-                            sentence_enders = re.compile(r"([.?!;\n]+)")
-                            clause_enders = re.compile(r"([.,?!;:\n]+)")
-
-                            while True:
-                                # Priority 1: Full sentence boundary (. ! ? \n ;)
-                                m_sent = sentence_enders.search(buffer)
-                                if m_sent and m_sent.end() >= 15:
-                                    split_idx = m_sent.end()
-                                    phrase = buffer[:split_idx]
-                                    buffer = buffer[split_idx:]
-                                    hardened = tts_pronounce(phrase)
-                                    if hardened:
-                                        yield hardened
-                                    continue
-
-                                # Priority 2: Clause boundary (, : etc) only if clause is sufficiently long
-                                m_clause = clause_enders.search(buffer)
-                                if m_clause and m_clause.end() >= 50:
-                                    split_idx = m_clause.end()
-                                    phrase = buffer[:split_idx]
-                                    buffer = buffer[split_idx:]
-                                    hardened = tts_pronounce(phrase)
-                                    if hardened:
-                                        yield hardened
-                                    continue
-
-                                # Priority 3: Fallback for long text without punctuation
-                                if len(buffer) >= 100:
-                                    last_space = buffer.rfind(" ")
-                                    if last_space != -1 and last_space >= 35:
-                                        phrase = buffer[:last_space + 1]
-                                        buffer = buffer[last_space + 1:]
-                                    else:
-                                        phrase = buffer
-                                        buffer = ""
-                                    hardened = tts_pronounce(phrase)
-                                    if hardened:
-                                        yield hardened
-                                    continue
-
-                                break
-                        
-                        if buffer.strip():
-                            hardened = tts_pronounce(buffer)
-                            if hardened:
-                                yield hardened
+                            if chunk:
+                                yield chunk
 
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
                         logger.exception(f">>> RESPONSE STREAM ERROR: {e}")
                         raise
+                    finally:
+                        response_text = "".join(response_parts).strip()
+                        if response_text and generations.is_current(generation):
+                            history.add_assistant(response_text)
+                            if retrieval and getattr(retrieval, "semantic_cache", None):
+                                if hasattr(retrieval.semantic_cache, "store_background"):
+                                    retrieval.semantic_cache.store_background(
+                                        transcript,
+                                        DiagnosticContext(),
+                                        response_text=response_text,
+                                        owner_id=user_identity,
+                                    )
+                                else:
+                                    asyncio.create_task(
+                                        retrieval.semantic_cache.store(
+                                            transcript,
+                                            DiagnosticContext(),
+                                            response_text=response_text,
+                                            owner_id=user_identity,
+                                        )
+                                    )
+                            if hasattr(brain, "canonical_brain") and brain.canonical_brain:
+                                asyncio.create_task(
+                                    brain.canonical_brain.process(
+                                        transcript,
+                                        technical=is_technical(transcript),
+                                    )
+                                )
+                            total_elapsed = (
+                                time.perf_counter()
+                                - started
+                            ) * 1000
+                            logger.info(
+                                ">>> TURN %d COMPLETE %.1fms: '%s...'",
+                                generation,
+                                total_elapsed,
+                                response_text[:40],
+                            )
 
                 speech_handle = (
                     session.say(
                         response_stream(),
-                        allow_interruptions=True,
+                        allow_interruptions=False,
                     )
                 )
 
@@ -2342,52 +2441,7 @@ async def entrypoint(
                     speech_handle
                 )
 
-                await speech_handle.wait_for_playout()
-
-                # ------------------------------------------------
-                # FINAL STALE CHECK
-                # ------------------------------------------------
-
-                if not generations.is_current(
-                    generation
-                ):
-                    return
-
-                response_text = (
-                    "".join(
-                        response_parts
-                    ).strip()
-                )
-
-                if not response_text and generations.is_current(generation):
-                    logger.warning(">>> EMPTY STREAM RESPONSE — FALLING BACK TO DIRECT GENERATION")
-                    fallback_text = await brain.chat(
-                        user_text=transcript,
-                        history=history.snapshot(),
-                    )
-                    if fallback_text and generations.is_current(generation):
-                        response_text = fallback_text
-                        await session.say(
-                            response_text,
-                            allow_interruptions=True,
-                        )
-
-                if response_text:
-
-                    history.add_assistant(
-                        response_text
-                    )
-
-                total_elapsed = (
-                    time.perf_counter()
-                    - started
-                ) * 1000
-
-                logger.info(
-                    ">>> TURN %d COMPLETE %.1fms",
-                    generation,
-                    total_elapsed,
-                )
+                await speech_handle
 
             except asyncio.CancelledError:
 
@@ -2422,7 +2476,7 @@ async def entrypoint(
 
                     await session.say(
                         "I couldn't complete that check. Please repeat the issue.",
-                        allow_interruptions=True,
+                        allow_interruptions=False,
                     )
 
             finally:
@@ -2459,6 +2513,17 @@ async def entrypoint(
                 )
             )
 
+            logger.info(
+                ">>> USER TRANSCRIPT: '%s' (is_final=%s)",
+                transcript,
+                is_final,
+            )
+
+            # Interrupt active speech only on genuine recognized speech from user
+            if len(transcript.strip()) >= 3 and generations.active_speech is not None:
+                logger.info(">>> GENUINE USER SPEECH DETECTED: INTERRUPTING ACTIVE SPEECH")
+                generations.cancel_active()
+
             if not is_final:
 
                 # Speculation only.
@@ -2479,15 +2544,12 @@ async def entrypoint(
             # generation safely.
             #
 
-            task = asyncio.create_task(
+            turn_task = asyncio.create_task(
                 process_final_turn(
                     transcript
                 )
             )
-
-            generations.attach_task(
-                task
-            )
+            generations.attach_task(turn_task)
 
         # ----------------------------------------------------
         # USER STATE / FAST INTERRUPTION
@@ -2513,35 +2575,14 @@ async def entrypoint(
                 None,
             )
 
-            if new_state != "speaking":
-                return
+            logger.debug(
+                ">>> USER STATE CHANGED: %s",
+                new_state,
+            )
 
-            # Don't increment generation for every normal user
-            # utterance before a response exists.
-            #
-            # Only invalidate when something is actually active.
-
-            if (
-                generations.active_task
-                is not None
-                or generations.active_speech
-                is not None
-            ):
-
-                generations.invalidate()
-
-                with suppress(
-                    Exception
-                ):
-
-                    asyncio.create_task(
-                        session.interrupt()
-                    )
-
-                logger.info(
-                    ">>> USER SPEECH "
-                    "INVALIDATED CURRENT RESPONSE"
-                )
+            if str(new_state) == "speaking" and generations.active_speech is not None:
+                logger.info(">>> USER BARGE-IN (user speaking): INTERRUPTING ACTIVE SPEECH")
+                generations.cancel_active()
 
         # ----------------------------------------------------
         # OVERLAPPING SPEECH
@@ -2554,18 +2595,19 @@ async def entrypoint(
             event,
         ):
 
-            if not getattr(
-                event,
-                "is_interruption",
-                False,
-            ):
-                return
-
-            generations.invalidate()
+            is_interruption = bool(
+                getattr(
+                    event,
+                    "is_interruption",
+                    False,
+                )
+            )
 
             logger.info(
-                ">>> SPEECH INTERRUPTION"
+                ">>> OVERLAPPING SPEECH (is_interruption=%s): INTERRUPTING ACTIVE SPEECH",
+                is_interruption,
             )
+            generations.cancel_active()
 
         # ----------------------------------------------------
         # AGENT STATE

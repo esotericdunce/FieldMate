@@ -38,54 +38,35 @@ class ReasoningManager:
 
         started = time.perf_counter()
 
+        ev_list = [
+            self._evidence_dict(item)
+            for item in (context.evidence[:5] if context.evidence else ())
+        ]
+
         payload = {
             "turn": turn,
             "generation": generation,
             "current_state": state,
             "current_observation": user_input,
-
-            "evidence": [
-                self._evidence_dict(item)
-                for item in context.evidence
-            ],
-
-            "supporting_evidence": [
-                self._evidence_dict(item)
-                for item in context.supporting
-            ],
-
-            "contradicting_evidence": [
-                self._evidence_dict(item)
-                for item in context.contradicting
-            ],
-
-            "neutral_evidence": [
-                self._evidence_dict(item)
-                for item in context.neutral
-            ],
-
-            "procedures": [
-                self._evidence_dict(item)
-                for item in context.procedures
-            ],
-
-            "past_cases": [
-                self._evidence_dict(item)
-                for item in context.past_cases
-            ],
-
+            "evidence": ev_list,
             "resolutions": [
                 self._evidence_dict(item)
-                for item in context.resolutions
+                for item in getattr(context, "resolutions", ())[:3]
             ],
-
+            "contradicting_evidence": [
+                self._evidence_dict(item)
+                for item in getattr(context, "contradicting", ())[:3]
+            ],
             "instructions": {
                 "do_not_invent_facts": True,
                 "do_not_repeat_completed_tests": True,
                 "prefer_discriminating_tests": True,
                 "respect_evidence_strength": True,
                 "preserve_contradictions": True,
+                "explicitly_challenge_user_if_visual_evidence_contradicts_claim": True,
+                "treat_camera_vision_as_verified_physical_evidence": True,
                 "do_not_claim_resolution_without_confirmation": True,
+                "populate_resolution_confirmed_if_technician_confirms_fix": True,
                 "use_only_provided_evidence": True,
                 "state_updates_must_be_explicit": True,
             },
@@ -257,9 +238,19 @@ class ReasoningManager:
                 )
             )
 
-        try:
-            data = json.loads(raw)
+        import re
+        clean_raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_raw, flags=re.DOTALL)
+        if match:
+            clean_raw = match.group(1).strip()
+        elif "{" in clean_raw and "}" in clean_raw:
+            start = clean_raw.find("{")
+            end = clean_raw.rfind("}") + 1
+            clean_raw = clean_raw[start:end].strip()
 
+        try:
+            data = json.loads(clean_raw)
         except json.JSONDecodeError:
             return DiagnosticDecision(
                 response=raw
@@ -374,29 +365,25 @@ class ReasoningManager:
                 return value.value
             return value
 
+        content = getattr(
+            evidence,
+            "content",
+            "",
+        ) or ""
+        if len(content) > 300:
+            content = content[:300] + "..."
+
         return {
             "id": getattr(
                 evidence,
                 "evidence_id",
                 None,
-            ),
-            "memory_id": getattr(
+            ) or getattr(
                 evidence,
                 "memory_id",
                 None,
             ),
-            "type": enum_value(
-                getattr(
-                    evidence,
-                    "evidence_type",
-                    None,
-                )
-            ),
-            "content": getattr(
-                evidence,
-                "content",
-                "",
-            ),
+            "content": content,
             "source": getattr(
                 evidence,
                 "source",
@@ -405,36 +392,6 @@ class ReasoningManager:
             "source_type": getattr(
                 evidence,
                 "source_type",
-                None,
-            ),
-            "equipment_model": getattr(
-                evidence,
-                "equipment_model",
-                None,
-            ),
-            "equipment_family": getattr(
-                evidence,
-                "equipment_family",
-                None,
-            ),
-            "oem": getattr(
-                evidence,
-                "oem",
-                None,
-            ),
-            "system": getattr(
-                evidence,
-                "system",
-                None,
-            ),
-            "subsystem": getattr(
-                evidence,
-                "subsystem",
-                None,
-            ),
-            "component": getattr(
-                evidence,
-                "component",
                 None,
             ),
             "fault_code": getattr(
@@ -468,20 +425,5 @@ class ReasoningManager:
                     "relation",
                     None,
                 )
-            ),
-            "case_id": getattr(
-                evidence,
-                "case_id",
-                None,
-            ),
-            "provenance": getattr(
-                evidence,
-                "provenance",
-                (),
-            ),
-            "retrieval_mode": getattr(
-                evidence,
-                "retrieval_mode",
-                None,
             ),
         }

@@ -596,6 +596,9 @@ def normalize_evidence(
             point
         )
 
+        if retrieval_mode == "hybrid" or (0.0 < score < 0.1):
+            score = min(1.0, score * 30.0)
+
         # ----------------------------------------------------
         # CONTENT
         # ----------------------------------------------------

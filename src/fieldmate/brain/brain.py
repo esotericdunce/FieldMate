@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import logging
+
 from fieldmate.brain.memory.manager import MemoryManager
+from fieldmate.brain.memory.models import (
+    MemoryRecord,
+    MemoryStatus,
+    MemoryType,
+)
 from fieldmate.brain.models import (
     BrainResult,
     DiagnosticContext,
@@ -19,6 +26,9 @@ from fieldmate.brain.state.events import (
     DomainEvent,
     EventType,
 )
+from fieldmate.brain.vision import VisionEngine
+
+logger = logging.getLogger("fieldmate.brain")
 
 
 @dataclass(slots=True)
@@ -54,7 +64,7 @@ class Brain:
     retrieval: RetrievalOrchestrator
     memory: MemoryManager
     reasoning: ReasoningManager
-
+    vision: VisionEngine
 
     retrieval_enabled: bool = True
 
@@ -162,6 +172,7 @@ class Brain:
                     if diagnostic.fault_codes
                     else None
                 ),
+                owner_id=self.state.session.owner_id,
                 limit=8,
             )
 
@@ -206,6 +217,38 @@ class Brain:
             )
 
         # =====================================================
+        # SEMANTIC CACHE FAST PATH (BYPASS LLM REASONING)
+        # =====================================================
+
+        if retrieval_result and getattr(retrieval_result, "cached_response", None) and isinstance(retrieval_result.cached_response, str):
+            cached_text = str(retrieval_result.cached_response)
+            logger.info(">>> SEMANTIC CACHE FAST PATH HIT: returning cached response in <10ms")
+            decision = DiagnosticDecision(
+                response=cached_text,
+                confidence=0.98,
+                hypothesis=self.state.session.diagnostic.current_hypothesis,
+                next_action=self.state.session.diagnostic.next_recommended_action,
+                clarification_needed=False,
+                clarification_question=None,
+                evidence_ids=(),
+                state_updates=(),
+                resolution_proposed=None,
+                resolution_confirmed=None,
+            )
+            return BrainResult(
+                response=cached_text,
+                decision=decision,
+                context=context,
+                retrieved=True,
+                prefetched=False,
+                timed_out=False,
+                retrieval_latency_ms=float(getattr(retrieval_result, "latency_ms", 0.0)),
+                reasoning_latency_ms=0.0,
+                turn=turn,
+                generation=generation,
+            )
+
+        # =====================================================
         # REASONING
         # =====================================================
 
@@ -223,11 +266,32 @@ class Brain:
         # APPLY VALIDATED DECISION
         # =====================================================
 
-        self._apply_decision(
+        await self._apply_decision(
             decision,
             turn=turn,
             generation=generation,
         )
+
+        # Store response in semantic cache for future hits
+        if self.retrieval and getattr(self.retrieval, "semantic_cache", None):
+            if hasattr(self.retrieval.semantic_cache, "store_background"):
+                self.retrieval.semantic_cache.store_background(
+                    user_input,
+                    context,
+                    response_text=decision.response,
+                    owner_id=self.state.session.owner_id,
+                    equipment_model=equipment.model,
+                    equipment_family=equipment.equipment_family,
+                    equipment_serial=equipment.serial_number,
+                    system=equipment.system,
+                    subsystem=equipment.subsystem,
+                    component=equipment.component,
+                    fault_code=(
+                        diagnostic.fault_codes[-1]
+                        if diagnostic.fault_codes
+                        else None
+                    ),
+                )
 
         return BrainResult(
             response=decision.response,
@@ -255,6 +319,205 @@ class Brain:
                     0.0,
                 )
             ),
+            reasoning_latency_ms=reasoning_latency,
+            turn=turn,
+            generation=generation,
+        )
+
+    # =========================================================
+    # MULTIMODAL VISION TURN
+    # =========================================================
+
+    # =========================================================
+    # MULTIMODAL VISION TURN
+    # =========================================================
+
+    async def process_image(
+        self,
+        image_bytes: bytes,
+        user_utterance: str | None = None,
+    ) -> BrainResult:
+        """
+        Process a multimodal turn consisting of an image and optional utterance.
+        """
+        turn = self.state.current_turn_id + 1
+        generation = self.state.current_generation_id + 1
+
+        if user_utterance:
+            self.state.apply(
+                DomainEvent(
+                    session_id=self.state.session.session_id,
+                    event_type=EventType.USER_MESSAGE,
+                    payload={"message": user_utterance.strip()},
+                    turn_id=turn,
+                    generation_id=generation,
+                    source="brain",
+                )
+            )
+
+        analysis = await self.vision.analyze(
+            image_bytes=image_bytes,
+            user_utterance=user_utterance,
+            state=self.state.session.diagnostic.__dict__,
+        )
+
+        # 1. Record structured visual observations with camera_vision provenance
+        self.state.apply(
+            DomainEvent(
+                session_id=self.state.session.session_id,
+                event_type=EventType.VISUAL_OBSERVATION_RECORDED,
+                payload={
+                    "visual_facts": analysis.visual_facts,
+                    "hardware_identifiers": analysis.hardware_identifiers,
+                    "ocr_text": analysis.ocr_text,
+                    "uncertain_observations": analysis.uncertain_observations,
+                    "suggested_camera_angle": analysis.suggested_camera_angle,
+                },
+                turn_id=turn,
+                generation_id=generation,
+                source="brain_vision",
+            )
+        )
+
+        # 2. Validate and conditionally promote verified hardware identifiers
+        hw_ids = analysis.hardware_identifiers or {}
+        equip_payload: dict[str, str] = {}
+        
+        known_oems = {"lenovo", "dell", "hp", "asus"}
+        raw_oem = hw_ids.get("oem") or hw_ids.get("manufacturer")
+        if raw_oem and raw_oem.lower() in known_oems:
+            if not self.state.session.diagnostic.equipment.manufacturer:
+                equip_payload["manufacturer"] = raw_oem.title()
+
+        raw_model = hw_ids.get("model") or hw_ids.get("model_number")
+        if raw_model and len(raw_model) >= 3 and not self.state.session.diagnostic.equipment.model:
+            equip_payload["model"] = raw_model
+
+        raw_serial = hw_ids.get("serial") or hw_ids.get("serial_number") or hw_ids.get("service_tag")
+        if raw_serial and len(raw_serial) >= 4 and not self.state.session.diagnostic.equipment.serial_number:
+            equip_payload["serial_number"] = raw_serial
+
+        if equip_payload:
+            self.state.apply(
+                DomainEvent(
+                    session_id=self.state.session.session_id,
+                    event_type=EventType.EQUIPMENT_IDENTIFIED,
+                    payload=equip_payload,
+                    turn_id=turn,
+                    generation_id=generation,
+                    source="brain_vision",
+                )
+            )
+
+        # 3. Validate and conditionally promote OCR stop-codes / error codes
+        if analysis.ocr_text:
+            import re
+            stop_code_match = re.search(
+                r"\b(?:0x[0-9A-Fa-f]{4,8}|WHEA_UNCORRECTABLE_ERROR|CRITICAL_PROCESS_DIED|PAGE_FAULT_IN_NONPAGED_AREA|DPC_WATCHDOG_VIOLATION|WHEA-Logger)\b",
+                analysis.ocr_text,
+                re.IGNORECASE,
+            )
+            if stop_code_match:
+                raw_code = stop_code_match.group(0)
+                if raw_code.lower().startswith("0x"):
+                    extracted_code = f"0x{raw_code[2:].upper()}"
+                else:
+                    extracted_code = raw_code.upper()
+
+                if extracted_code not in self.state.session.diagnostic.fault_codes:
+                    self.state.apply(
+                        DomainEvent(
+                            session_id=self.state.session.session_id,
+                            event_type=EventType.FAULT_IDENTIFIED,
+                            payload={"fault_code": extracted_code},
+                            turn_id=turn,
+                            generation_id=generation,
+                            source="brain_vision_ocr",
+                        )
+                    )
+
+        # 4. State-aware Qdrant Retrieval
+        context = DiagnosticContext()
+        retrieval_result = None
+
+        if self.retrieval_enabled:
+            diagnostic = self.state.session.diagnostic
+            equipment = diagnostic.equipment
+
+            query_parts = []
+            if user_utterance:
+                query_parts.append(user_utterance)
+            if analysis.visual_facts:
+                query_parts.extend(analysis.visual_facts[:3])
+            if analysis.ocr_text:
+                query_parts.append(analysis.ocr_text)
+
+            search_query = " ".join(query_parts).strip()
+            if not search_query:
+                search_query = "Physical hardware inspection observations"
+
+            retrieval_result = await self.retrieval.retrieve(
+                search_query,
+                equipment_model=equipment.model,
+                equipment_family=equipment.equipment_family,
+                equipment_serial=equipment.serial_number,
+                system=equipment.system,
+                subsystem=equipment.subsystem,
+                component=equipment.component,
+                fault_code=(
+                    diagnostic.fault_codes[-1]
+                    if diagnostic.fault_codes
+                    else None
+                ),
+                owner_id=self.state.session.owner_id,
+                limit=8,
+            )
+
+            context = self._convert_retrieval_context(retrieval_result)
+
+        if self.state.current_generation_id > generation:
+            return BrainResult(
+                response="[Generation Interrupted]",
+                decision=None,
+                context=context,
+                retrieved=bool(retrieval_result),
+                prefetched=False,
+                timed_out=False,
+                retrieval_latency_ms=0.0,
+                reasoning_latency_ms=0.0,
+                turn=turn,
+                generation=generation,
+            )
+
+        # 5. Diagnostic Reasoning over State + Visuals + Retrieved Context
+        decision, reasoning_latency = await self.reasoning.reason(
+            state=self._prompt_state(),
+            context=context,
+            user_input=user_utterance or "[Physical inspection image provided]",
+            turn=turn,
+            generation=generation,
+        )
+
+        await self._apply_decision(
+            decision,
+            turn=turn,
+            generation=generation,
+        )
+
+        if decision.resolution_confirmed:
+            await self._extract_and_save_resolution(
+                turn=turn,
+                generation=generation,
+            )
+
+        return BrainResult(
+            response=decision.response,
+            decision=decision,
+            context=context,
+            retrieved=bool(retrieval_result),
+            prefetched=getattr(retrieval_result, "prefetched", False) if retrieval_result else False,
+            timed_out=getattr(retrieval_result, "timed_out", False) if retrieval_result else False,
+            retrieval_latency_ms=getattr(retrieval_result, "latency_ms", 0.0) if retrieval_result else 0.0,
             reasoning_latency_ms=reasoning_latency,
             turn=turn,
             generation=generation,
@@ -421,7 +684,7 @@ class Brain:
     # DECISION → DOMAIN EVENTS
     # =========================================================
 
-    def _apply_decision(
+    async def _apply_decision(
         self,
         decision: DiagnosticDecision,
         *,
@@ -516,6 +779,42 @@ class Brain:
                     source="reasoning",
                 )
             )
+
+            # Persist confirmed case resolution to Qdrant memory
+            if hasattr(self.retrieval, "repository") and self.retrieval.repository:
+                try:
+                    import asyncio
+                    equipment = self.state.session.diagnostic.equipment
+                    res_content = (
+                        f"Confirmed resolution for {equipment.model or 'PC'}: "
+                        f"{decision.resolution_confirmed}"
+                    )
+                    memory_record = MemoryRecord(
+                        memory_type=MemoryType.RESOLUTION,
+                        content=res_content,
+                        status=MemoryStatus.VERIFIED,
+                        confidence=0.95,
+                        equipment_model=equipment.model,
+                        equipment_family=equipment.equipment_family,
+                        equipment_serial=equipment.serial_number,
+                        system=equipment.system,
+                        subsystem=equipment.subsystem,
+                        component=equipment.component,
+                        fault_codes=list(self.state.session.diagnostic.fault_codes),
+                        metadata={
+                            "owner_id": self.state.session.owner_id,
+                            "session_id": session_id,
+                            "scope": "user" if self.state.session.owner_id else "global",
+                        },
+                    )
+                    await self.retrieval.repository.upsert_memory(
+                        memory_record,
+                        wait=True,
+                    )
+                    if self.retrieval and getattr(self.retrieval, "semantic_cache", None):
+                        await self.retrieval.semantic_cache.invalidate_owner(self.state.session.owner_id)
+                except Exception:
+                    pass
 
         # -----------------------------------------------------
         # EXPLICIT STATE UPDATES
@@ -675,6 +974,9 @@ class Brain:
         # Do not leak RetrievedMemory into reasoning.
         # Convert it conservatively into Evidence.
         # -----------------------------------------------------
+
+        if hasattr(raw_context, "evidence") and raw_context.evidence:
+            return raw_context
 
         memories = getattr(
             raw_context,

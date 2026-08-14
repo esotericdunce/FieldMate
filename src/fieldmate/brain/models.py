@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fieldmate.brain.retrieval.evidence import Evidence
+if TYPE_CHECKING:
+    from fieldmate.brain.retrieval.evidence import Evidence
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DiagnosticContext:
     """
     Canonical context passed from retrieval into reasoning.
@@ -38,6 +39,16 @@ class DiagnosticContext:
 
     token_budget: int = 4000
 
+    query: str = ""
+
+    retrieval_mode: str = "dense"
+
+    total_tokens_approx: int = 0
+
+    prefetched: bool = False
+
+    timed_out: bool = False
+
     @property
     def has_evidence(self) -> bool:
         return bool(self.evidence)
@@ -45,6 +56,11 @@ class DiagnosticContext:
     @property
     def has_contradictions(self) -> bool:
         return bool(self.contradicting)
+
+    @property
+    def memories(self) -> tuple[Evidence, ...]:
+        """Backward-compatible alias for evidence."""
+        return self.evidence
 
 
 @dataclass(frozen=True, slots=True)
