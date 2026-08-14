@@ -8,7 +8,10 @@ import './index.css';
 function App() {
   const [token, setToken] = useState<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
-  const [room, setRoom] = useState<string>('fieldmate_dev_room');
+  // Unique per browser tab/session so two users never collide on the
+  // same LiveKit room+identity (LiveKit disallows duplicate identities
+  // in one room, and the backend keys /api/inspect state by this value).
+  const [room, setRoom] = useState<string>(() => `fieldmate_${crypto.randomUUID()}`);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -17,7 +20,8 @@ function App() {
       setIsConnecting(true);
       setError(null);
       const backendUrl = import.meta.env.VITE_BACKEND_URL || '';
-      const response = await fetch(`${backendUrl}/api/token`);
+      const params = new URLSearchParams({ room, username: room });
+      const response = await fetch(`${backendUrl}/api/token?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'Failed to initialize session');

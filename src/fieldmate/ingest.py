@@ -100,10 +100,14 @@ def chunk_text(text: str, max_chars: int = 1500, overlap: int = 150) -> list[str
                     else:
                         # Character sliding window as fallback
                         start = 0
+                        # Guard against overlap >= max_chars, which would
+                        # make the window never advance (or go backwards),
+                        # causing an infinite loop.
+                        step = max(max_chars - overlap, 1)
                         while start < len(p):
                             end = min(start + max_chars, len(p))
                             chunks.append(p[start:end].strip())
-                            start += max_chars - overlap
+                            start += step
                         current = ""
             if current:
                 chunks.append(current)

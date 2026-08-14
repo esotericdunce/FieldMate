@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import os
+import time
 import uvicorn
 import asyncio
 from typing import Any
@@ -25,8 +26,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Active session Brain registry for multimodal inspections
+# Active session Brain registry for multimodal inspections.
+# Bounded so a long-running server doesn't accumulate unlimited
+# Groq clients / Qdrant connections, one per unique session_id.
 active_runtimes: dict[str, Any] = {}
+active_runtimes_last_used: dict[str, float] = {}
+MAX_ACTIVE_RUNTIMES = int(os.getenv("FIELDMATE_MAX_ACTIVE_RUNTIMES", "50"))
+
+
+async def _evict_stale_runtimes() -> None:
+    while len(active_runtimes) > MAX_ACTIVE_RUNTIMES:
+        oldest_key = min(
+            active_runtimes_last_used,
+            key=lambda key: active_runtimes_last_used[key],
+        )
+        oldest = active_runtimes.pop(oldest_key)
+        active_runtimes_last_used.pop(oldest_key, None)
+        try:
+            await oldest.close()
+        except Exception as e:
+            print(f"Runtime eviction close notice: {e}")
 
 
 # Generate LiveKit Token & Dispatch Agent
@@ -91,7 +110,9 @@ async def inspect_hardware(
             except Exception as e:
                 print(f"Qdrant bootstrap notice: {e}")
             active_runtimes[session_id] = runtime
+            await _evict_stale_runtimes()
 
+        active_runtimes_last_used[session_id] = time.monotonic()
         runtime = active_runtimes[session_id]
         result = await runtime.brain.process_image(
             image_bytes=image_bytes,
@@ -129,7 +150,12 @@ if __name__ == "__main__":
     env["PYTHONUNBUFFERED"] = "1"
     src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
     env["PYTHONPATH"] = src_dir + os.pathsep + env.get("PYTHONPATH", "")
-    agent_proc = subprocess.Popen([sys.executable, "-m", "fieldmate.voice_agent", "dev"], env=env)
+    # "dev" mode is for local development only: it hot-reloads, logs
+    # verbosely, and does not gracefully drain in-flight jobs on shutdown.
+    # Production should run "start". Override with FIELDMATE_AGENT_MODE=dev
+    # for local testing.
+    agent_mode = os.getenv("FIELDMATE_AGENT_MODE", "start")
+    agent_proc = subprocess.Popen([sys.executable, "-m", "fieldmate.voice_agent", agent_mode], env=env)
     
     try:
         print("Starting FastAPI Web Server on port 8000...")
