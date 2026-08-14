@@ -98,7 +98,7 @@ flowchart TD
     StateEngine -->|Canonical State| Context
     Context --> GroundedGroq
     
-    SemCache -->|Fastpath Cache Hit (<10ms)| TTSNormalizer
+    SemCache -->|"Fastpath Cache Hit (sub-10ms)"| TTSNormalizer
     SpecGroq -->|Tokens Released| TTSNormalizer
     GroundedGroq -->|Tokens Streamed| TTSNormalizer
     
