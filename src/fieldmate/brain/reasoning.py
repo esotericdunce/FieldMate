@@ -25,6 +25,9 @@ class ReasoningManager:
     model: str
     system_prompt: str
     max_tokens: int = 600
+    # Fail fast instead of hanging on the SDK's multi-minute default
+    # timeout if Groq stalls.
+    timeout: float = 20.0
 
     async def reason(
         self,
@@ -153,7 +156,9 @@ class ReasoningManager:
             model=self.model,
             messages=messages,
             temperature=0.3,
+            timeout=self.timeout,
         )
+        
 
         content = (
             response.choices[0]
@@ -213,6 +218,7 @@ class ReasoningManager:
                 ],
                 temperature=0,
                 max_tokens=self.max_tokens,
+                timeout=self.timeout,
             )
         )
 

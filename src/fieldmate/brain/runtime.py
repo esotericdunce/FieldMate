@@ -17,7 +17,6 @@ from fieldmate.brain.state.engine import StateEngine
 from fieldmate.brain.state.models import FieldMateSession
 from fieldmate.brain.vision import VisionEngine, DEFAULT_VISION_MODEL
 
-
 load_dotenv()
 
 
@@ -132,7 +131,7 @@ def build_brain_runtime(
     application startup before accepting diagnostic turns.
     """
 
-    resolved_owner = owner_id or os.getenv("FIELD_USER_ID", "tech_john_doe")
+    resolved_owner = owner_id or os.getenv("FIELDMATE_USER_ID", "tech_john_doe")
 
     session = FieldMateSession(
         session_id=session_id,
@@ -216,6 +215,8 @@ def build_brain_runtime(
 
     default_model = os.getenv(
         "GROQ_MODEL",
+        # NOTE: Groq has scheduled "llama-3.1-8b-instant" for shutdown
+        # on 2026-08-16. Kept as-is per explicit request.
         "llama-3.1-8b-instant",
     )
 
@@ -229,6 +230,7 @@ def build_brain_runtime(
                 DEFAULT_SYSTEM_PROMPT,
             )
         ),
+        timeout=float(os.getenv("FIELDMATE_GROQ_TIMEOUT_SECONDS", "20.0")),
     )
 
     vision = VisionEngine(

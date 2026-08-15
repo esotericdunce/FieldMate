@@ -120,6 +120,11 @@ FLUX_EOT_TIMEOUT_MS = int(
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
+    # NOTE: Groq has scheduled "llama-3.1-8b-instant" for shutdown on
+    # 2026-08-16. Kept as-is per explicit request. When Groq turns it
+    # off, calls using this model will start failing until GROQ_MODEL
+    # is changed (e.g. to "openai/gpt-oss-20b", Groq's recommended
+    # replacement) via this env var.
     "llama-3.1-8b-instant",
 )
 
